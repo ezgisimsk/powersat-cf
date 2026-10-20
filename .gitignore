@@ -1,0 +1,8 @@
+# Whitelist: only the code is versioned. Data, results, paper drafts and personal notes stay local.
+/*
+!/.gitignore
+!/README.md
+!/requirements.txt
+!/scripts/
+scripts/__pycache__/
+scripts/pdf2txt.py
