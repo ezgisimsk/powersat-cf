@@ -9,7 +9,10 @@ Train/val/test = US plants of split_random train/val/test that have CEMS labels.
 Outputs (results/onoff/<name>/): frame predictions for US test and all non-US thermal plants, metrics.json.
 Plant on-rate = mean P(on) over frames with scene cloud < 10 %.
 
-usage: python 24_train_onoff.py --out results/onoff/NAME [--epochs 8] [--seed 0]
+Ablation (--inputs): full = image + month + cloud; image = pixels only; context = month + cloud only;
+month / cloud = that context alone. Disabled inputs are zeroed (the encoder is skipped without pixels).
+
+usage: python 24_train_onoff.py --out results/onoff/NAME [--epochs 8] [--seed 0] [--inputs full]
 """
 import argparse
 import importlib.util
@@ -31,9 +34,13 @@ spec.loader.exec_module(T)
 CLEAR = 10
 
 
+INPUTS = {"full": (1, 1, 1), "image": (1, 0, 0), "context": (0, 1, 1), "month": (0, 1, 0), "cloud": (0, 0, 1)}
+
+
 class OnOffModel(nn.Module):
-    def __init__(self, weights, d=256):
+    def __init__(self, weights, d=256, inputs="full"):
         super().__init__()
+        self.use_img, self.use_month, self.use_cloud = INPUTS[inputs]
         self.enc = T.ssl4eo_resnet50(weights)
         self.img = nn.Linear(2048, d)
         self.month = nn.Embedding(13, 16)
@@ -42,9 +49,14 @@ class OnOffModel(nn.Module):
         self.on_head, self.util_head = nn.Linear(d, 1), nn.Linear(d, 1)
 
     def forward(self, img, month, cloud):
-        img = F.interpolate(img, scale_factor=2, mode="bilinear", align_corners=False)
-        z = torch.cat([self.img(self.enc.forward_features(img).mean((2, 3))),
-                       self.ctx(torch.cat([self.month(month), cloud], 1))], 1)
+        if self.use_img:
+            img = F.interpolate(img, scale_factor=2, mode="bilinear", align_corners=False)
+            z_img = self.img(self.enc.forward_features(img).mean((2, 3)))
+        else:
+            z_img = torch.zeros(month.size(0), self.img.out_features, device=month.device)
+        month = month * self.use_month  # index 0 is never a real month
+        cloud = cloud * self.use_cloud
+        z = torch.cat([z_img, self.ctx(torch.cat([self.month(month), cloud], 1))], 1)
         h = self.trunk(z)
         return self.on_head(h).squeeze(1), torch.sigmoid(self.util_head(h).squeeze(1))
 
@@ -94,6 +106,22 @@ def frame_metrics(d, prefix):
     return out
 
 
+def within_plant(d, n_boot=2000):
+    """AUROC of on vs off frames inside each plant (plants with >= 3 of each), median + bootstrap CI."""
+    d = d[d.on.notna()]
+    aucs, excluded = [], 0
+    for _, g in d.groupby("gppd_idnr"):
+        if (g.on == 1).sum() >= 3 and (g.on == 0).sum() >= 3:
+            aucs.append(roc_auc_score(g.on, g.p_on))
+        else:
+            excluded += 1
+    aucs = np.array(aucs)
+    rng = np.random.default_rng(0)
+    meds = [np.median(rng.choice(aucs, len(aucs))) for _ in range(n_boot)]
+    return {"within_plant_auroc_median": float(np.median(aucs)), "within_plant_auroc_ci": [float(np.percentile(meds, 2.5)), float(np.percentile(meds, 97.5))],
+            "within_plant_n_plants": int(len(aucs)), "within_plant_n_excluded": int(excluded)}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--epochs", type=int, default=8)
@@ -106,6 +134,7 @@ def main():
     ap.add_argument("--cems", default=str(ROOT / "data/processed/cems_overpass.parquet"))
     ap.add_argument("--subtypes", default=str(ROOT / "data/processed/subtypes.parquet"))
     ap.add_argument("--weights", default=str(ROOT / "models/pretrained/resnet50_s2_all_moco.pth"))
+    ap.add_argument("--inputs", default="full", choices=list(INPUTS))
     ap.add_argument("--fold", type=int, help="k-fold mode: train on US plants outside fold k (5 folds by plant), predict fold k + non-US")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
@@ -145,7 +174,7 @@ def main():
     tr, va = tr.assign(row=tr.row.map(remap).values), va.assign(row=va.row.map(remap).values)
     fr = fr.assign(row=fr.row.map(remap).fillna(-1).astype(int).values)
     print(f"loaded {len(need)} of {len(mm)} frames", flush=True)
-    model = OnOffModel(a.weights).to(dev)
+    model = OnOffModel(a.weights, inputs=a.inputs).to(dev)
     enc_ids = {id(p) for p in model.enc.parameters()}
     opt = torch.optim.AdamW([{"params": [p for p in model.parameters() if id(p) not in enc_ids], "lr": 1e-3},
                              {"params": list(model.enc.parameters()), "lr": 1e-4}], weight_decay=0.05)
@@ -184,6 +213,7 @@ def main():
     usd = apply[apply.is_us]
     m = {"best_val_auroc": best}
     m.update(frame_metrics(usd, "us_test"))
+    m.update(within_plant(usd))
     for name, sel in (("tower", usd.tower == 1), ("no_tower", usd.tower == 0), ("cooling_unknown", usd.tower.isna())):
         m.update(frame_metrics(usd[sel], f"us_test_{name}"))
     clear = apply[apply.scene_cloud < CLEAR]
