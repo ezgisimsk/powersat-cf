@@ -4,7 +4,7 @@ Code for **"Can satellites tell how much a power plant generates? A multimodal b
 
 The pipeline links the [Global Power Plant Database](https://datasets.wri.org/dataset/globalpowerplantdatabase) (v1.3) to reported generation (EIA-923/860, CEA, Australian CER, JRC-PPDB-OPEN), national fuel-level capacity factors (Ember), technology subtypes (EIA-860, JRC-PPDB-OPEN), Sentinel-2 L2A imagery (Microsoft Planetary Computer) and EPA CEMS hourly gross load. It then benchmarks tabular, image, fusion, residual-prior, temporal and activity-detection models under random, spatial-block and geographic-transfer protocols.
 
-The dataset is not part of this repository; it will be released separately.
+**Dataset:** [doi.org/10.5281/zenodo.23492453](https://doi.org/10.5281/zenodo.23492453) (Zenodo, CC BY 4.0): tables, labels, splits and the 2019 Sentinel-2 patches of 34,927 plants. It is not part of this repository.
 
 ## Requirements
 
@@ -32,6 +32,7 @@ Scripts are numbered in execution order. Each script's docstring documents its i
 | Technology subtypes | `20_subtypes.py`, `21_image_features.py`, `22_subtype_experiments.py` | EIA-860/JRC subtypes and cooling; image subtype classifiers |
 | Activity detection | `23_cems_overpass.py`, `24_train_onoff.py`, `25_onrate_gbt.py` | Overpass-hour labels from EPA CEMS; on/off CNN; satellite on-rate as a feature |
 | Figures | `26_paper_figures.py`, `27_paper_figures2.py` | Paper figures |
+| Release | `29_build_release.py`, `30_zenodo_upload.py` | Build the Zenodo dataset package (tables, data card, patch shards) and upload it |
 
 ## Data sources and licences
 
