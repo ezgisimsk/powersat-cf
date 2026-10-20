@@ -34,6 +34,7 @@ Scripts are numbered in execution order. Each script's docstring documents its i
 | Figures | `26_paper_figures.py`, `27_paper_figures2.py` | Paper figures |
 | Release | `29_build_release.py`, `30_zenodo_upload.py` | Build the Zenodo dataset package (tables, data card, patch shards) and upload it |
 | Revision (coal + gas) | `31_revision_cg.py`, `32_relative_fewshot.py`, `33_v2_figures.py`; `24_train_onoff.py --inputs` | Coal and gas cohort: prior ablations, year-matched on-rates, leave-one-state-out, bootstrap CIs; pre-specified cross-country experiments (relative activity, allocation, few-shot); activity-model input ablations |
+| Backbone comparison | `24_train_onoff.py --backbone vit_s`, `34_backbone_compare.py` | SSL4EO-S12 ResNet-50 vs ViT-S/16 activity models: within-plant AUROC, leave-one-state-out and Europe results |
 
 ## Data sources and licences
 

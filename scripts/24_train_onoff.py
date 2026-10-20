@@ -12,7 +12,10 @@ Plant on-rate = mean P(on) over frames with scene cloud < 10 %.
 Ablation (--inputs): full = image + month + cloud; image = pixels only; context = month + cloud only;
 month / cloud = that context alone. Disabled inputs are zeroed (the encoder is skipped without pixels).
 
-usage: python 24_train_onoff.py --out results/onoff/NAME [--epochs 8] [--seed 0] [--inputs full]
+Backbone (--backbone): resnet50 (default) or vit_s = ViT-S/16 with the same SSL4EO-S12 MoCo pretraining;
+for the ViT the 64 px crop is resized to 224 px and patch tokens are averaged.
+
+usage: python 24_train_onoff.py --out results/onoff/NAME [--epochs 8] [--seed 0] [--inputs full] [--backbone resnet50]
 """
 import argparse
 import importlib.util
@@ -24,6 +27,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+import timm
 import torch.nn.functional as F
 from sklearn.metrics import roc_auc_score
 
@@ -37,19 +41,40 @@ CLEAR = 10
 INPUTS = {"full": (1, 1, 1), "image": (1, 0, 0), "context": (0, 1, 1), "month": (0, 1, 0), "cloud": (0, 0, 1)}
 
 
+def ssl4eo_vit_s(weights):
+    """ViT-S/16 pretrained with MoCo on SSL4EO-S12 (13 bands), patch embedding restricted to our 6 bands."""
+    m = timm.create_model("vit_small_patch16_224", in_chans=13, num_classes=0)
+    m.load_state_dict(torch.load(weights, map_location="cpu", weights_only=True))
+    old = m.patch_embed.proj
+    new = nn.Conv2d(len(T.S2_IDX), old.out_channels, old.kernel_size, old.stride)
+    new.weight.data = old.weight.data[:, T.S2_IDX] * (13 / len(T.S2_IDX))
+    new.bias.data = old.bias.data.clone()
+    m.patch_embed.proj = new
+    return m
+
+
 class OnOffModel(nn.Module):
-    def __init__(self, weights, d=256, inputs="full"):
+    def __init__(self, weights, d=256, inputs="full", backbone="resnet50"):
         super().__init__()
         self.use_img, self.use_month, self.use_cloud = INPUTS[inputs]
-        self.enc = T.ssl4eo_resnet50(weights)
-        self.img = nn.Linear(2048, d)
+        self.backbone = backbone
+        if backbone == "vit_s":
+            self.enc = ssl4eo_vit_s(weights)
+            self.img = nn.Linear(self.enc.embed_dim, d)
+        else:
+            self.enc = T.ssl4eo_resnet50(weights)
+            self.img = nn.Linear(2048, d)
         self.month = nn.Embedding(13, 16)
         self.ctx = nn.Sequential(nn.Linear(16 + 2, 32), nn.GELU())
         self.trunk = nn.Sequential(nn.LayerNorm(d + 32), nn.Linear(d + 32, d), nn.GELU(), nn.Dropout(0.2))
         self.on_head, self.util_head = nn.Linear(d, 1), nn.Linear(d, 1)
 
     def forward(self, img, month, cloud):
-        if self.use_img:
+        if self.use_img and self.backbone == "vit_s":
+            img = F.interpolate(img, size=224, mode="bilinear", align_corners=False)
+            tokens = self.enc.forward_features(img)  # B, 1 + 196, embed_dim
+            z_img = self.img(tokens[:, self.enc.num_prefix_tokens:].mean(1))
+        elif self.use_img:
             img = F.interpolate(img, scale_factor=2, mode="bilinear", align_corners=False)
             z_img = self.img(self.enc.forward_features(img).mean((2, 3)))
         else:
@@ -135,6 +160,8 @@ def main():
     ap.add_argument("--subtypes", default=str(ROOT / "data/processed/subtypes.parquet"))
     ap.add_argument("--weights", default=str(ROOT / "models/pretrained/resnet50_s2_all_moco.pth"))
     ap.add_argument("--inputs", default="full", choices=list(INPUTS))
+    ap.add_argument("--backbone", default="resnet50", choices=["resnet50", "vit_s"])
+    ap.add_argument("--vit_weights", default=str(ROOT / "models/pretrained/vit_s16_s2_all_moco.pth"))
     ap.add_argument("--fold", type=int, help="k-fold mode: train on US plants outside fold k (5 folds by plant), predict fold k + non-US")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
@@ -174,7 +201,8 @@ def main():
     tr, va = tr.assign(row=tr.row.map(remap).values), va.assign(row=va.row.map(remap).values)
     fr = fr.assign(row=fr.row.map(remap).fillna(-1).astype(int).values)
     print(f"loaded {len(need)} of {len(mm)} frames", flush=True)
-    model = OnOffModel(a.weights, inputs=a.inputs).to(dev)
+    w = a.vit_weights if a.backbone == "vit_s" else a.weights
+    model = OnOffModel(w, inputs=a.inputs, backbone=a.backbone).to(dev)
     enc_ids = {id(p) for p in model.enc.parameters()}
     opt = torch.optim.AdamW([{"params": [p for p in model.parameters() if id(p) not in enc_ids], "lr": 1e-3},
                              {"params": list(model.enc.parameters()), "lr": 1e-4}], weight_decay=0.05)
