@@ -179,6 +179,8 @@ def main():
     ap.add_argument("--backbone", default="resnet50", choices=["resnet50", "vit_s"])
     ap.add_argument("--vit_weights", default=str(ROOT / "models/pretrained/vit_s16_s2_all_moco.pth"))
     ap.add_argument("--fold", type=int, help="k-fold mode: train on US plants outside fold k (5 folds by plant), predict fold k + non-US")
+    ap.add_argument("--state_folds", action="store_true", help="with --fold: folds are groups of US states (balanced by plants), not random plants")
+    ap.add_argument("--eia860", default=str(ROOT / "data/raw/eia/eia8602019/2___Plant_Y2019.xlsx"))
     ap.add_argument("--eu_group", type=int, help="multi-region mode: hold out European country group k (0-4)")
     ap.add_argument("--no_eu_train", action="store_true", help="control: same US data as multi-region mode, no European training frames")
     ap.add_argument("--entsoe", default=str(ROOT / "data/processed/entsoe_overpass.parquet"))
@@ -217,6 +219,17 @@ def main():
     else:  # out-of-fold on-rates for every US plant (feature for the CF model without leakage)
         us_ids = np.array(sorted(fr[fr.is_us].gppd_idnr.unique()))
         fold_of = pd.Series(np.random.default_rng(0).integers(0, 5, len(us_ids)), index=us_ids)
+        if a.state_folds:  # whole states per fold, so a held-out state's plants never train the model that scores them
+            st = pd.read_excel(a.eia860, skiprows=1)[["Plant Code", "State"]]
+            st = st.set_index(pd.to_numeric(st["Plant Code"], errors="coerce")).State
+            state = pd.Series([st.get(int(g[3:])) if g[3:].isdigit() else None for g in us_ids], index=us_ids)
+            counts = state.value_counts()
+            size, group = [0] * 5, {}
+            for s_, k in counts.items():
+                j = int(np.argmin(size))
+                group[s_], size[j] = j, size[j] + k
+            fold_of = state.map(group).fillna(fold_of).astype(int)  # plants without a state keep their random fold
+            print(f"state folds: plants per fold {fold_of.value_counts().sort_index().tolist()}", flush=True)
         f = us_lab.gppd_idnr.map(fold_of)
         rest = us_lab[f != a.fold]
         va_ids = set(pd.Series(rest.gppd_idnr.unique()).sample(frac=0.1, random_state=0))

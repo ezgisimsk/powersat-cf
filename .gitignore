@@ -7,3 +7,4 @@
 scripts/__pycache__/
 scripts/pdf2txt.py
 api_key.txt
+!/LICENSE

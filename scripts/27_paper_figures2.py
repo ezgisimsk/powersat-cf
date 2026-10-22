@@ -81,16 +81,16 @@ def fig_imagery(plants):
     idx = pd.read_csv(ROOT / "data/raw/s2_2019/index.csv").drop_duplicates("gppd_idnr", keep="last")
     ok = set(idx.gppd_idnr[idx.status == "ok"])
     fuels = ["Coal", "Gas", "Nuclear", "Hydro", "Solar", "Wind", "Oil", "Waste"]
-    fig = plt.figure(figsize=(7.2, 3.0))
+    fig = plt.figure(figsize=(5.4, 3.6))  # final text width, no text below 7 pt
     for i, f in enumerate(fuels):
         c = L[(L.primary_fuel == f) & L.gppd_idnr.isin(ok)].sort_values("capacity_mw", ascending=False)
         r = c.iloc[0]
         x = np.load(ROOT / "data/raw/s2_2019/patches" / f"{r.gppd_idnr}.npy")
-        ax = fig.add_axes([i * 0.125, 0.52, 0.12, 0.40])
+        ax = fig.add_axes([i * 0.125, 0.69, 0.12, 0.18])
         ax.imshow(rgb(x))
         ax.set_axis_off()
-        ax.set_title(f"{f}\n{r.capacity_mw:,.0f} MW, CF {r.cf_target:.2f}", fontsize=6.5)
-    fig.text(0.0, 0.97, "(a) Sentinel-2, 2019, 2.56 km around the largest labeled plant of each fuel", fontsize=8.5)
+        ax.set_title(f"{f}\n{r.capacity_mw:,.0f} MW\nCF {r.cf_target:.2f}", fontsize=7)
+    fig.text(0.0, 1.0, "(a) Sentinel-2, 2019, 2.56 km around the largest labelled plant of each fuel", fontsize=8)
 
     # (b) one US coal plant: clear monthly frames with the plant on vs off at the overpass hour
     cems = pd.read_parquet(ROOT / "data/processed/cems_overpass.parquet")
@@ -112,15 +112,18 @@ def fig_imagery(plants):
     stack = np.stack([d["x"][pos[dt]] for dt in sel.date])
     lo, hi = np.percentile(stack[:, [2, 1, 0]], 2), np.percentile(stack[:, [2, 1, 0]], 98)  # common stretch
     for i, (_, r) in enumerate(sel.iterrows()):
-        ax = fig.add_axes([i * 0.125, 0.02, 0.12, 0.40])
+        ax = fig.add_axes([i * 0.125, 0.25, 0.12, 0.18])
         ax.imshow(rgb(d["x"][pos[r.date]], lo, hi))
+        h = d["x"].shape[-1]  # 10 m pixels; the model sees the central 64 px (640 m)
+        o = (h - 64) / 2 - 0.5
+        ax.add_patch(plt.Rectangle((o, o), 64, 64, fill=False, ec="#ffffff", lw=0.8, ls="--"))
         ax.set_axis_off()
         state = "on" if r.on == 1 else "off"
-        ax.set_title(f"{r.date}\n{state} (load {r.inst_util:.0%})", fontsize=6.5,
+        ax.set_title(f"{r.date}\n{state}\n(load {r.inst_util:.0%})", fontsize=7,
                      color="#c2410c" if r.on == 1 else MUTED)
     cap = L.set_index("gppd_idnr").capacity_mw[pid]
-    fig.text(0.0, 0.47, f"(b) Monthly frames (960 m) of a {cap:,.0f} MW US coal plant; state at the overpass hour from EPA CEMS",
-             fontsize=8.5)
+    fig.text(0.0, 0.57, f"(b) Monthly frames (960 m; dashed: central 640 m seen by the model)\n"
+             f"of a {cap:,.0f} MW US coal plant", fontsize=8)
     save(fig, "imagery_examples")
     print("F3 series plant:", pid)
 

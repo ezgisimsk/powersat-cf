@@ -1,8 +1,8 @@
 # PowerSat-CF
 
-Code for **"Can satellites tell how much a power plant generates? A multimodal benchmark and geographic-transfer analysis of plant-level capacity factors"** (İrem Ezgi Bayar, Ömer Karal; manuscript in preparation).
+Code for **"Seeing coal and gas plants run: overpass-aligned Sentinel-2 activity signals for plant-level capacity-factor estimation within and across regions"** (İrem Ezgi Bayar, Ömer Karal; manuscript in preparation for *Environmental Modelling & Software*).
 
-The pipeline links the [Global Power Plant Database](https://datasets.wri.org/dataset/globalpowerplantdatabase) (v1.3) to reported generation (EIA-923/860, CEA, Australian CER, JRC-PPDB-OPEN), national fuel-level capacity factors (Ember), technology subtypes (EIA-860, JRC-PPDB-OPEN), Sentinel-2 L2A imagery (Microsoft Planetary Computer) and EPA CEMS hourly gross load. It then benchmarks tabular, image, fusion, residual-prior, temporal and activity-detection models under random, spatial-block and geographic-transfer protocols.
+The pipeline links the [Global Power Plant Database](https://datasets.wri.org/dataset/globalpowerplantdatabase) (v1.3) to reported generation (EIA-923/860, CEA, Australian CER, JRC-PPDB-OPEN), national fuel-level capacity factors (Ember), technology subtypes (EIA-860, JRC-PPDB-OPEN), Sentinel-2 L2A imagery (Microsoft Planetary Computer) EPA CEMS hourly gross load and ENTSO-E unit-level generation. It then benchmarks tabular, image, fusion, residual-prior, temporal and activity-detection models under random, spatial-block and geographic-transfer protocols.
 
 **Dataset:** [doi.org/10.5281/zenodo.23492453](https://doi.org/10.5281/zenodo.23492453) (Zenodo, CC BY 4.0): tables, labels, splits and the 2019 Sentinel-2 patches of 34,927 plants. It is not part of this repository.
 
@@ -35,7 +35,15 @@ Scripts are numbered in execution order. Each script's docstring documents its i
 | Release | `29_build_release.py`, `30_zenodo_upload.py` | Build the Zenodo dataset package (tables, data card, patch shards) and upload it |
 | Revision (coal + gas) | `31_revision_cg.py`, `32_relative_fewshot.py`, `33_v2_figures.py`; `24_train_onoff.py --inputs` | Coal and gas cohort: prior ablations, year-matched on-rates, leave-one-state-out, bootstrap CIs; pre-specified cross-country experiments (relative activity, allocation, few-shot); activity-model input ablations |
 | Backbone comparison | `24_train_onoff.py --backbone vit_s`, `34_backbone_compare.py` | SSL4EO-S12 ResNet-50 vs ViT-S/16 activity models: within-plant AUROC, leave-one-state-out and Europe results |
+| Europe activity labels | `35_entsoe_overpass.py`, `36_europe_activity_eval.py` | Overpass-hour labels from ENTSO-E unit generation (API key in the `ENTSOE_KEY` environment variable); US-trained activity model on European ground truth |
+| Multi-region activity | `24_train_onoff.py --eu_group`, `37_multiregion_eval.py` | Activity model trained on US + European labels, European country groups held out |
+| State folds and oracle | `24_train_onoff.py --fold k --state_folds`, `38_state_folds_oracle.py`, `39_oracle_breakdown.py` | Leak-free leave-one-state-out on-rates (state-grouped folds, three seeds); true on-rate upper bound; breakdowns by labelling and capacity |
+| Graphical abstract | `40_graphical_abstract.py` | Graphical abstract for the submission |
 
 ## Data sources and licences
 
-GPPD (CC BY 4.0), Ember yearly electricity data (CC BY 4.0), EIA-923/860 and EPA CEMS (US public domain; CEMS via the PUDL raw archive on Zenodo), JRC-PPDB-OPEN (CC BY 4.0), Copernicus Sentinel-2 data (free and open), Natural Earth (public domain).
+GPPD (CC BY 4.0), Ember yearly electricity data (CC BY 4.0), EIA-923/860 and EPA CEMS (US public domain; CEMS via the PUDL raw archive on Zenodo), JRC-PPDB-OPEN (CC BY 4.0), ENTSO-E Transparency Platform (used under its terms and conditions), Copernicus Sentinel-2 data (free and open), Natural Earth (public domain).
+
+## License
+
+The code is released under the MIT License (see `LICENSE`). The dataset on Zenodo is released under CC BY 4.0.
