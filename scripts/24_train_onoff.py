@@ -15,6 +15,11 @@ month / cloud = that context alone. Disabled inputs are zeroed (the encoder is s
 Backbone (--backbone): resnet50 (default) or vit_s = ViT-S/16 with the same SSL4EO-S12 MoCo pretraining;
 for the ViT the 64 px crop is resized to 224 px and patch tokens are averaged.
 
+Multi-region mode (--eu_group k): ENTSO-E overpass-hour labels for European plants are added. European countries
+with labels are split into 5 groups balanced by labelled plants (greedy, largest country first). Training uses all
+US labelled frames plus the European frames outside group k; predictions are written for every non-US frame whose
+country is not in training (so each labelled European plant is predicted by a model that never saw its country).
+
 usage: python 24_train_onoff.py --out results/onoff/NAME [--epochs 8] [--seed 0] [--inputs full] [--backbone resnet50]
 """
 import argparse
@@ -147,6 +152,17 @@ def within_plant(d, n_boot=2000):
             "within_plant_n_plants": int(len(aucs)), "within_plant_n_excluded": int(excluded)}
 
 
+def eu_groups(labels, n=5):
+    """Greedy balance of labelled countries into n groups by number of labelled plants."""
+    counts = labels.groupby("country").gppd_idnr.nunique().sort_values(ascending=False)
+    groups, size = [[] for _ in range(n)], [0] * n
+    for c, k in counts.items():
+        j = int(np.argmin(size))
+        groups[j].append(c)
+        size[j] += k
+    return groups
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--epochs", type=int, default=8)
@@ -163,6 +179,9 @@ def main():
     ap.add_argument("--backbone", default="resnet50", choices=["resnet50", "vit_s"])
     ap.add_argument("--vit_weights", default=str(ROOT / "models/pretrained/vit_s16_s2_all_moco.pth"))
     ap.add_argument("--fold", type=int, help="k-fold mode: train on US plants outside fold k (5 folds by plant), predict fold k + non-US")
+    ap.add_argument("--eu_group", type=int, help="multi-region mode: hold out European country group k (0-4)")
+    ap.add_argument("--no_eu_train", action="store_true", help="control: same US data as multi-region mode, no European training frames")
+    ap.add_argument("--entsoe", default=str(ROOT / "data/processed/entsoe_overpass.parquet"))
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
     torch.manual_seed(a.seed)
@@ -174,10 +193,25 @@ def main():
     plants = pd.read_parquet(a.plants)[["gppd_idnr", "country", "primary_fuel", "capacity_mw", "cf_target", "split_random", "is_us"]]
     fr = pd.read_parquet(a.frames)
     fr = fr.merge(pd.read_parquet(a.features)[["gppd_idnr", "date", "c_scl_cloud"]], on=["gppd_idnr", "date"], how="left")
-    fr = fr.merge(pd.read_parquet(a.cems)[["gppd_idnr", "date", "on", "inst_util"]], on=["gppd_idnr", "date"], how="left")
+    lab = pd.read_parquet(a.cems)[["gppd_idnr", "date", "on", "inst_util"]]
+    if a.eu_group is not None:
+        lab = pd.concat([lab, pd.read_parquet(a.entsoe)[["gppd_idnr", "date", "on", "inst_util"]]])
+    fr = fr.merge(lab, on=["gppd_idnr", "date"], how="left")
     fr = fr.merge(plants, on="gppd_idnr").merge(pd.read_parquet(a.subtypes)[["gppd_idnr", "cooling", "tower"]], on="gppd_idnr", how="left")
     us_lab = fr[fr.is_us & fr.on.notna()]
-    if a.fold is None:
+    if a.eu_group is not None:
+        eu_lab = fr[~fr.is_us & fr.on.notna()]
+        groups = eu_groups(eu_lab)
+        hold = sum(groups, []) if a.no_eu_train else groups[a.eu_group]
+        train_c = [c for g in groups for c in g if c not in hold]
+        print(f"groups {groups}; holding out {hold}", flush=True)
+        rest = pd.concat([us_lab, eu_lab[eu_lab.country.isin(train_c)]])
+        va_ids = set(pd.Series(rest.gppd_idnr.unique()).sample(frac=0.1, random_state=0))
+        tr, va = rest[~rest.gppd_idnr.isin(va_ids)], rest[rest.gppd_idnr.isin(va_ids)]
+        te = eu_lab[eu_lab.country.isin(hold)]
+        test_mask = pd.Series(False, index=fr.index)
+        a.groups, a.holdout = groups, hold
+    elif a.fold is None:
         tr, va, te = (us_lab[us_lab.split_random == s] for s in ("train", "val", "test"))
         test_mask = fr.is_us & (fr.split_random == "test")
     else:  # out-of-fold on-rates for every US plant (feature for the CF model without leakage)
@@ -192,6 +226,8 @@ def main():
 
     # load only the frames this run touches (train/val + frames to predict), remapping row indices
     apply_mask = test_mask | ~fr.is_us
+    if a.eu_group is not None:
+        apply_mask = ~fr.is_us & ~fr.country.isin(train_c)
     need = np.unique(np.concatenate([tr.row.values, va.row.values, fr[apply_mask].row.values]))
     mm = np.load(a.mm, mmap_mode="r")
     images = np.empty((len(need), *mm.shape[1:]), mm.dtype)
@@ -238,8 +274,16 @@ def main():
             "cooling", "tower", "on", "inst_util", "p_on", "util_pred"]
     apply[keep].to_parquet(out / "frame_preds.parquet", index=False)
 
-    usd = apply[apply.is_us]
     m = {"best_val_auroc": best}
+    if a.eu_group is not None:  # report on the held-out European labelled frames and stop
+        eud = apply[apply.on.notna()]
+        m.update(frame_metrics(eud, "eu_holdout"))
+        m.update(within_plant(eud))
+        json.dump({**vars(a), **m, "history": hist}, open(out / "metrics.json", "w"), indent=1)
+        (out / "best.pt").unlink()
+        print(json.dumps(m, indent=1))
+        return
+    usd = apply[apply.is_us]
     m.update(frame_metrics(usd, "us_test"))
     m.update(within_plant(usd))
     for name, sel in (("tower", usd.tower == 1), ("no_tower", usd.tower == 0), ("cooling_unknown", usd.tower.isna())):
